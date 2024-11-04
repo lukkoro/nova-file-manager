@@ -143,7 +143,7 @@ const useBrowserStore = defineStore('nova-file-manager/browser', {
     },
 
     // config
-    chunkSize: 50 * 1024 * 1024,
+    chunkSize: 4 * 1024 * 1024,
 
     // pintura
     usePintura: false,

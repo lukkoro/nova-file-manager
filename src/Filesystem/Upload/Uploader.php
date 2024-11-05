@@ -37,10 +37,29 @@ class Uploader implements UploaderContract
         $save = $receiver->receive();
 
         if ($save->isFinished()) {
-            return $this->saveFile($request, $save->getFile());
+            error_log(sprintf(
+                "Starting final file save - Size: %s, Name: %s",
+                $save->getFile()->getSize(),
+                $save->getFile()->getClientOriginalName()
+            ));
+
+            $startTime = microtime(true);
+            $result = $this->saveFile($request, $save->getFile());
+            $endTime = microtime(true);
+
+            error_log(sprintf("Finished file save - Duration: %.2f seconds", $endTime - $startTime));
+
+            return $result;
         }
 
         $handler = $save->handler();
+
+        error_log(sprintf(
+            "Chunk processed - Percentage: %s, Chunk: %s, Total Chunks: %s",
+            $handler->getPercentageDone(),
+            $request->input('resumableChunkNumber'),
+            $request->input('resumableTotalChunks')
+        ));
 
         return [
             'done' => $handler->getPercentageDone(),
@@ -62,11 +81,25 @@ class Uploader implements UploaderContract
 
         event(new FileUploading($request->manager()->filesystem(), $request->manager()->getDisk(), $testPath));
 
+        error_log(sprintf(
+            "Starting filesystem put - Path: %s, Size: %s bytes",
+            $testPath,
+            $file->getSize()
+        ));
+
+        $startTime = microtime(true);
         $path = $request->manager()->filesystem()->putFileAs(
             path: $folderPath,
             file: $file,
             name: $filePath,
         );
+        $endTime = microtime(true);
+
+        error_log(sprintf(
+            "Finished filesystem put - Duration: %.2f seconds, Path: %s",
+            $endTime - $startTime,
+            $path
+        ));
 
         event(new FileUploaded($request->manager()->filesystem(), $request->manager()->getDisk(), $path));
 

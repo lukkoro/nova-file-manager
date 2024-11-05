@@ -90,7 +90,8 @@ const useBrowserStore = defineStore('nova-file-manager/browser', {
     perPageOptions: range(10, 60, 10),
     view: 'grid',
     modals: [],
-    callback: () => {},
+    callback: () => {
+    },
 
     // files, folders and other data
     files: undefined,
@@ -142,7 +143,7 @@ const useBrowserStore = defineStore('nova-file-manager/browser', {
     },
 
     // config
-    chunkSize: 1024 * 1024,
+    chunkSize: 2 * 1024 * 1024, // 2MB chunks
 
     // pintura
     usePintura: false,
@@ -596,8 +597,10 @@ const useBrowserStore = defineStore('nova-file-manager/browser', {
       const chunkSize = this.chunkSize
       const totalChunks = Math.ceil(file.size / chunkSize)
       let currentChunk = 0
+      let consecutiveErrors = 0
+      const maxRetries = 3
 
-      const uploadNextChunk = async () => {
+      const uploadChunk = async (retryCount = 0): Promise<boolean> => {
         const start = currentChunk * chunkSize
         const end = Math.min(start + chunkSize, file.size)
         const chunk = file.slice(start, end)
@@ -608,12 +611,11 @@ const useBrowserStore = defineStore('nova-file-manager/browser', {
         formData.append('resumableChunkSize', chunkSize.toString())
         formData.append('resumableTotalSize', file.size.toString())
         formData.append('resumableTotalChunks', totalChunks.toString())
-        formData.append('resumableIdentifier', `${file.size}-${file.name.replace(/[^0-9a-zA-Z_-]/gim, '')}`)
+        formData.append('resumableIdentifier', `${file.size}-${file.name.replace(/[^0-9a-zA-Z_-]/img, '')}`)
         formData.append('resumableFilename', file.name)
         formData.append('resumableRelativePath', file.name)
         formData.append('resumableType', file.type)
 
-        // Add payload data
         const payload = this.payload({
           path: this.path ?? '/',
         })
@@ -622,38 +624,62 @@ const useBrowserStore = defineStore('nova-file-manager/browser', {
         })
 
         try {
-          const response = await client().post(this.url(ENDPOINTS.UPLOAD), formData, {
+          await client().post(this.url(ENDPOINTS.UPLOAD), formData, {
             headers: {
               'Content-Type': 'multipart/form-data',
               'X-CSRF-TOKEN': csrf(),
             },
+            timeout: 60000, // 1 minute timeout per chunk
           })
 
-          // Update progress
-          const progress = Math.floor(((currentChunk + 1) / totalChunks) * 100)
-          this.updateQueue({
-            id: file.name,
-            ratio: progress,
-          })
+          consecutiveErrors = 0
+          return true
+        } catch (error) {
+          if (retryCount < maxRetries) {
+            // Wait before retrying (exponential backoff)
+            await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000))
+            return uploadChunk(retryCount + 1)
+          }
 
-          currentChunk++
-
-          if (currentChunk < totalChunks) {
-            await uploadNextChunk()
-          } else {
-            // Upload complete
+          consecutiveErrors++
+          if (consecutiveErrors >= 3) {
             this.updateQueue({
               id: file.name,
-              ratio: 100,
-              status: true,
+              status: false,
             })
+            window.Nova.error('Upload failed after multiple retries')
+            return false
           }
-        } catch (error) {
+
+          window.Nova.error(`Chunk ${currentChunk + 1} failed, retrying...`)
+          return false
+        }
+      }
+
+      const uploadNextChunk = async () => {
+        const success = await uploadChunk()
+        if (!success) return
+
+        // Update progress
+        const progress = Math.floor(((currentChunk + 1) / totalChunks) * 100)
+        this.updateQueue({
+          id: file.name,
+          ratio: progress,
+        })
+
+        currentChunk++
+
+        if (currentChunk < totalChunks) {
+          // Add a small delay between chunks to prevent overwhelming the server
+          await new Promise(resolve => setTimeout(resolve, 100))
+          await uploadNextChunk()
+        } else {
+          // Upload complete
           this.updateQueue({
             id: file.name,
-            status: false,
+            ratio: 100,
+            status: true,
           })
-          window.Nova.error((error as any)?.response?.data?.message || 'Upload failed')
         }
       }
 

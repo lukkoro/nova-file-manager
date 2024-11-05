@@ -90,8 +90,7 @@ const useBrowserStore = defineStore('nova-file-manager/browser', {
     perPageOptions: range(10, 60, 10),
     view: 'grid',
     modals: [],
-    callback: () => {
-    },
+    callback: () => {},
 
     // files, folders and other data
     files: undefined,
@@ -611,7 +610,7 @@ const useBrowserStore = defineStore('nova-file-manager/browser', {
         formData.append('resumableChunkSize', chunkSize.toString())
         formData.append('resumableTotalSize', file.size.toString())
         formData.append('resumableTotalChunks', totalChunks.toString())
-        formData.append('resumableIdentifier', `${file.size}-${file.name.replace(/[^0-9a-zA-Z_-]/img, '')}`)
+        formData.append('resumableIdentifier', `${file.size}-${file.name.replace(/[^0-9a-zA-Z_-]/gim, '')}`)
         formData.append('resumableFilename', file.name)
         formData.append('resumableRelativePath', file.name)
         formData.append('resumableType', file.type)

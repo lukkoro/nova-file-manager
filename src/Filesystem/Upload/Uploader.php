@@ -37,74 +37,51 @@ class Uploader implements UploaderContract
         $save = $receiver->receive();
 
         if ($save->isFinished()) {
-            error_log(sprintf(
-                "Starting final file save - Size: %s, Name: %s",
-                $save->getFile()->getSize(),
-                $save->getFile()->getClientOriginalName()
-            ));
+            $file = $save->getFile();
 
-            $startTime = microtime(true);
-            $result = $this->saveFile($request, $save->getFile());
-            $endTime = microtime(true);
+            // Stream the file to its final location instead of moving it all at once
+            $folderPath = dirname($request->filePath());
+            $filePath = $file->getClientOriginalName();
+            $finalPath = ltrim(str_replace('//', '/', "{$folderPath}/{$filePath}"), '/');
 
-            error_log(sprintf("Finished file save - Duration: %.2f seconds", $endTime - $startTime));
+            event(new FileUploading($request->manager()->filesystem(), $request->manager()->getDisk(), $finalPath));
 
-            return $result;
+            // Stream in chunks of 1MB
+            $stream = fopen($file->getRealPath(), 'r');
+            $tempPath = $file->getRealPath();
+
+            try {
+                $request->manager()->filesystem()->writeStream(
+                    $finalPath,
+                    $stream
+                );
+
+                if (is_resource($stream)) {
+                    fclose($stream);
+                }
+
+                // Clean up the temporary file
+                @unlink($tempPath);
+
+                event(new FileUploaded($request->manager()->filesystem(), $request->manager()->getDisk(), $finalPath));
+
+                return [
+                    'message' => __('nova-file-manager::messages.file.upload'),
+                ];
+            } catch (\Exception $e) {
+                if (is_resource($stream)) {
+                    fclose($stream);
+                }
+                @unlink($tempPath);
+                throw $e;
+            }
         }
 
         $handler = $save->handler();
 
-        error_log(sprintf(
-            "Chunk processed - Percentage: %s, Chunk: %s, Total Chunks: %s",
-            $handler->getPercentageDone(),
-            $request->input('resumableChunkNumber'),
-            $request->input('resumableTotalChunks')
-        ));
-
         return [
             'done' => $handler->getPercentageDone(),
             'status' => true,
-        ];
-    }
-
-    public function saveFile(UploadFileRequest $request, UploadedFile $file): array
-    {
-        if (!$request->validateUpload($file, true)) {
-            throw ValidationException::withMessages([
-                'file' => [__('nova-file-manager::errors.file.upload_validation')],
-            ]);
-        }
-
-        $folderPath = dirname($request->filePath());
-        $filePath = $file->getClientOriginalName();
-        $testPath = ltrim(str_replace('//', '/', "{$folderPath}/{$filePath}"), '/');
-
-        event(new FileUploading($request->manager()->filesystem(), $request->manager()->getDisk(), $testPath));
-
-        error_log(sprintf(
-            "Starting filesystem put - Path: %s, Size: %s bytes",
-            $testPath,
-            $file->getSize()
-        ));
-
-        $startTime = microtime(true);
-        $path = $request->manager()->filesystem()->putFileAs(
-            path: $folderPath,
-            file: $file,
-            name: $filePath,
-        );
-        $endTime = microtime(true);
-
-        error_log(sprintf(
-            "Finished filesystem put - Duration: %.2f seconds, Path: %s",
-            $endTime - $startTime,
-            $path
-        ));
-
-        event(new FileUploaded($request->manager()->filesystem(), $request->manager()->getDisk(), $path));
-
-        return [
-            'message' => __('nova-file-manager::messages.file.upload'),
         ];
     }
 }

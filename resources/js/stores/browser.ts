@@ -16,7 +16,6 @@ import {
 import { AxiosResponse } from 'axios'
 import range from 'lodash/range'
 import { acceptHMRUpdate, defineStore } from 'pinia'
-import Resumable from 'resumablejs'
 import {
   BROWSER_MODAL_NAME,
   ENDPOINTS,
@@ -91,7 +90,8 @@ const useBrowserStore = defineStore('nova-file-manager/browser', {
     perPageOptions: range(10, 60, 10),
     view: 'grid',
     modals: [],
-    callback: () => {},
+    callback: () => {
+    },
 
     // files, folders and other data
     files: undefined,
@@ -587,53 +587,78 @@ const useBrowserStore = defineStore('nova-file-manager/browser', {
     upload({ files }: { files: File[] }) {
       this.isUploading = true
 
-      const uploader = new Resumable({
-        permanentErrors: [400, 404, 409, 415, 419, 422, 500, 501],
-        chunkSize: this.chunkSize,
-        maxChunkRetries: 5,
-        chunkRetryInterval: 1e3,
-        simultaneousUploads: 1,
-        testChunks: false,
-        target: this.url(ENDPOINTS.UPLOAD),
-        query: this.payload({
-          path: this.path ?? '/',
-        }),
-        headers: {
-          Accept: 'application/json',
-          'X-CSRF-TOKEN': csrf(),
-        },
-      })
-
       files.forEach(file => {
-        uploader.addFile(file)
-
         this.queueFile({ file })
+        this.uploadFileInChunks(file)
       })
+    },
 
-      uploader.on('fileAdded', () => uploader.upload())
+    async uploadFileInChunks(file: File) {
+      const chunkSize = this.chunkSize
+      const totalChunks = Math.ceil(file.size / chunkSize)
+      let currentChunk = 0
 
-      uploader.on('fileSuccess', file => {
-        this.updateQueue({
-          id: file.fileName,
-          status: true,
+      const uploadNextChunk = async () => {
+        const start = currentChunk * chunkSize
+        const end = Math.min(start + chunkSize, file.size)
+        const chunk = file.slice(start, end)
+
+        const formData = new FormData()
+        formData.append('file', chunk)
+        formData.append('resumableChunkNumber', (currentChunk + 1).toString())
+        formData.append('resumableChunkSize', chunkSize.toString())
+        formData.append('resumableTotalSize', file.size.toString())
+        formData.append('resumableTotalChunks', totalChunks.toString())
+        formData.append('resumableIdentifier', `${file.size}-${file.name.replace(/[^0-9a-zA-Z_-]/img, '')}`)
+        formData.append('resumableFilename', file.name)
+        formData.append('resumableRelativePath', file.name)
+        formData.append('resumableType', file.type)
+
+        // Add payload data
+        const payload = this.payload({
+          path: this.path ?? '/',
         })
-      })
-
-      uploader.on('fileProgress', file => {
-        this.updateQueue({
-          id: file.fileName,
-          ratio: Math.floor(file.progress(false) * 100),
-        })
-      })
-
-      uploader.on('fileError', (file, message) => {
-        this.updateQueue({
-          id: file.fileName,
-          status: false,
+        Object.entries(payload).forEach(([key, value]) => {
+          formData.append(key, value)
         })
 
-        window.Nova.error(JSON.parse(message).message)
-      })
+        try {
+          const response = await client().post(this.url(ENDPOINTS.UPLOAD), formData, {
+            headers: {
+              'Content-Type': 'multipart/form-data',
+              'X-CSRF-TOKEN': csrf(),
+            },
+          })
+
+          // Update progress
+          const progress = Math.floor(((currentChunk + 1) / totalChunks) * 100)
+          this.updateQueue({
+            id: file.name,
+            ratio: progress,
+          })
+
+          currentChunk++
+
+          if (currentChunk < totalChunks) {
+            await uploadNextChunk()
+          } else {
+            // Upload complete
+            this.updateQueue({
+              id: file.name,
+              ratio: 100,
+              status: true,
+            })
+          }
+        } catch (error) {
+          this.updateQueue({
+            id: file.name,
+            status: false,
+          })
+          window.Nova.error((error as any)?.response?.data?.message || 'Upload failed')
+        }
+      }
+
+      await uploadNextChunk()
     },
 
     async renameFile({ id, from, to }: { id: string; from: string; to: string }) {
